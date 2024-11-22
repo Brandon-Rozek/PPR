@@ -7,7 +7,7 @@ in ECP 1997.
 Slight adaption to match a more STRIPS-style formalism.
 Absense of proposition implies falsity
 """
-from collections import defaultdict
+from functools import cached_property
 from dataclasses import dataclass
 from itertools import product
 from typing import List, Set, Tuple, FrozenSet, Dict
@@ -32,6 +32,12 @@ class PosDist:
     def __init__(self, state_space: StateSpace):
         self.state_space = state_space
         self.plausibilities: Dict[State, Plausibility] = {}
+
+    def __hash__(self):
+        return hash((self.state_space, hash(tuple(sorted((hash(kv) for kv in self.plausibilities.items()))))))
+
+    def __eq__(self, x):
+        return self.state_space == x.state_space and self.plausibilities == x.plausibilities
 
     def __getitem__(self, state: State):
         return self.plausibilities.get(state, 0)
@@ -114,6 +120,7 @@ def satisfies(state: State, effect: PosEffect) -> bool:
 
 @dataclass
 class PosAction:
+    name: str
     effects: List[PosEffect]
 
     def is_valid(self, state_space: StateSpace) -> bool:
@@ -240,6 +247,21 @@ def compute_nec_from_pos_action(states: List[State], dist: PosDist, action: PosA
 
     return nvalue
 
+def compute_nec_from_pos(states: List[State], pladist: PosDist) -> Plausibility:
+    """
+    Returns the value of N[states] given the current plausibility distribution.
+
+    Derived from the property that N(A) = 1 - Pl(\Omega - A)
+    which is equivalent to N(A) = min_{s notin A)} (1 - Pl(s))
+    """
+    state_space = pladist.state_space
+    nvalue = 1
+    for s in state_space:
+        if s not in states:
+            nvalue = min(nvalue, 1 - pladist[s])
+    return nvalue
+
+
 class PosPlanningProblem:
     def __init__(self, initial_distribution: PosDist, actions: List[PosAction], goal: Set[Proposition]):
         self.initial_distribution = initial_distribution
@@ -249,15 +271,21 @@ class PosPlanningProblem:
     def is_valid(self) -> bool:
         state_space = self.initial_distribution.state_space
         if not self.initial_distribution.is_valid():
-            print("Not valid initial distributoin")
             return False
 
         for action in self.actions:
             if not action.is_valid(state_space):
-                print("Invalid action found")
                 return False
 
         for s in state_space:
             if self.goal < s:
                 return True
         return False
+
+    @cached_property
+    def state_space(self):
+        return self.initial_distribution.state_space
+
+    @cached_property
+    def goal_states(self) -> Set[State]:
+        return {s for s in self.state_space if self.goal < s}

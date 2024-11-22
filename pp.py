@@ -9,6 +9,7 @@ Absense of proposition implies falsity
 """
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import product
 from typing import List, Set, Tuple, FrozenSet, Dict
 
 @dataclass
@@ -64,7 +65,8 @@ class PosDist:
         return (s for (s, p) in self.plausibilities.items() if p > 0)
 
     def __str__(self):
-        return str(self.plausibilities)
+        return str({kv for kv in self.plausibilities.items() if kv[1] > 0})
+        # return str(self.plausibilities)
 
 @dataclass
 class PossEffect:
@@ -178,4 +180,28 @@ def compute_next_pos_from_pos_action(dist: PosDist, action: PosAction) -> PosDis
             p = min(next_dist_s[sN], dist[s0])
             # Maximize over π[sN ∣ s0, a] for all s0s considered so far
             next_dist[sN] = max(next_dist[sN], p)
+    return next_dist
+
+def compute_next_nec_from_pos_action(dist: PosDist, action: PosAction) -> PosDist:
+    """
+    Third equation from definition 3 describing N[sN ∣ π_init, a]
+    """
+    state_space = dist.state_space
+    next_dist = PosDist(state_space)
+    
+    # First assign everything with a necessity of 1
+    # and the algorithm will iteratively take the min
+    # of this and π[s ∣ s0, a] for every s0
+    for s in state_space:
+        next_dist[s] = 1
+    
+    for s0 in state_space:
+        # Compute π[sNC ∣ s0, a] for every state sNC
+        next_dist_s = compute_next_pos_from_state_action(s0, action, state_space)
+        for sN, sNC in product(state_space, state_space):
+            # Only look at the compliment of sN
+            if sN != sNC:
+                p = max(1 - dist[s0], 1 - next_dist_s[sNC])
+                next_dist[sN] = min(next_dist[sN], p)    
+
     return next_dist

@@ -31,13 +31,12 @@ state6: State = frozenset({
 })
 
 
-initial_distribution: PosDist = new_pos_dist()
+state_space: StateSpace = {state1, state2, state3, state4, state5, state6}
+initial_distribution = PosDist(state_space)
 initial_distribution[state1] = 1
-state_space: List[State] = [state1, state2, state3, state4, state5, state6]
 
 print(initial_distribution)
-
-print(is_valid_pos_dist(initial_distribution))
+print(initial_distribution.is_valid())
 
 move_0_1 = PosAction([
     # No-op if dead

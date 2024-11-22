@@ -14,24 +14,57 @@ from typing import List, Set, Tuple, FrozenSet, Dict
 @dataclass
 class Proposition:
     name: str
-    
+
     def __hash__(self):
         return hash(self.name)
-    
+
     def __str__(self):
         return f"({self.name})"
 
 State = FrozenSet[Proposition]
+StateSpace = FrozenSet[State]
 
 
 Plausibility = float
-PosDist = Dict[State, Plausibility]
 
-def new_pos_dist():
-    return defaultdict(lambda : 0)
+class PosDist:
+    def __init__(self, state_space: StateSpace):
+        self.state_space = state_space
+        self.plausibilities: Dict[State, Plausibility] = {}
 
-def is_valid_pos_dist(dist: PosDist) -> bool:
-    return max(dist.values()) == 1
+    def __getitem__(self, state: State):
+        return self.plausibilities.get(state, 0)
+
+    def __setitem__(self, state: State, p: Plausibility):
+        self.plausibilities[state] = p
+
+    def is_valid(self) -> bool:
+        # Ensure that the keys of the plausibility map
+        # are within the state space
+        if not all(k in self.state_space for k in self.plausibilities.keys()):
+            return False
+
+        # Ensure that the possibility distribution is normalized
+        # i.e. the maximum plausibility value is equal to 1
+        if not max(self.plausibilities.values()) == 1:
+            return False
+
+        # Ensure that the plausibility values live between 0 and 1
+        for p in self.plausibilities.values():
+            if p < 0 or p > 1:
+                return False
+
+        return True
+
+    def non_zero_states(self):
+        """
+        Return a generator of the states
+        that have a non-zero plausibility value
+        """
+        return (s for (s, p) in self.plausibilities.items() if p > 0)
+
+    def __str__(self):
+        return str(self.plausibilities)
 
 @dataclass
 class PossEffect:
@@ -41,6 +74,14 @@ class PossEffect:
     consequents: List[Tuple[Plausibility, Set[Proposition], Set[Proposition]]]
 
     def is_valid_pos_dist(self) -> bool:
+        # Ensure that the plausibility values live
+        # between 0 and 1
+        for c in self.consequents:
+            if c[0] < 0 or c[0] > 1:
+                return False
+
+        # Ensure that the possibility distribution is normalized
+        # i.e the maximum plausibility value is 1
         return max(self.consequents, key=lambda c: c[0])[0] == 1
 
 def apply_consequent(eij: Tuple[Set[Proposition], Set[Proposition]], s: State) -> State:
@@ -54,10 +95,14 @@ def apply_consequent(eij: Tuple[Set[Proposition], Set[Proposition]], s: State) -
 
 
 def satisfies(state: State, effect: PossEffect) -> bool:
+    """
+    Returns whether a state satisfies the discriminent of a
+    Possibilistic Effect e_i.
+    """
     pos_satisfied = all((pd in state for pd in effect.positive_discriminants))
     if not pos_satisfied:
         return False
-    
+
     neg_satisfied = all((nd not in state for nd in effect.negative_discriminants))
     return neg_satisfied
 
@@ -65,28 +110,28 @@ def satisfies(state: State, effect: PossEffect) -> bool:
 class PosAction:
     effects: List[PossEffect]
 
-    def is_valid(self, state_space: List[State]) -> bool:
+    def is_valid(self, state_space: StateSpace) -> bool:
         # Every effect must have a valid possibilistic distribution
         valid_pos_dist = all((e.is_valid_pos_dist() for e in self.effects))
 
         if not valid_pos_dist:
             return False
-    
+
         # Make sure only one effect can fire at a given state
         for state in state_space:
             num_satisfied = 0
             for effect in self.effects:
                 if satisfies(state, effect):
                     num_satisfied += 1
-                
+
                 if num_satisfied > 1:
                     break
-            
+
             if num_satisfied != 1:
                 return False
-        
+
         return True
-    
+
     def find_applicable_effect(self, state: State) -> PossEffect:
         """
         Returns the first PosEffect whose discriminent is
@@ -100,16 +145,15 @@ class PosAction:
 # Apply an action to a PosDist
 # PosDist x PosAction -> PosDist
 
-def compute_next_pos_from_state_action(s: State, action: PosAction) -> PosDist:
+def compute_next_pos_from_state_action(s: State, action: PosAction, state_space: Set[State]) -> PosDist:
     """
     Definition 3 from the paper describing π[s′ ∣ s, a]
-
     """
-    # Start off with every next state having 0 plausibility
-    next_dist = new_pos_dist()
+    next_dist = PosDist(state_space)
     # Enforces that s ∈ S(t_i)
     effect = action.find_applicable_effect(s)
     for (plausibility, add_effects, del_effects) in effect.consequents:
+        # Compute s′ = Res(eik, s)
         next_state = apply_consequent((add_effects, del_effects), s)
         # Keep the highest plausibilty consequent
         next_dist[next_state] = max(next_dist[next_state], plausibility)
@@ -118,17 +162,20 @@ def compute_next_pos_from_state_action(s: State, action: PosAction) -> PosDist:
 
 def compute_next_pos_from_pos_action(dist: PosDist, action: PosAction) -> PosDist:
     """
-    Second equation from definition 3 describing π[s′ ∣ π_init, a]
+    Second equation from definition 3 describing π[sN ∣ π_init, a]
     """
-    # Start off with every next state having 0 plausibility
-    next_dist = new_pos_dist()
-    for state in dist:
-        # For every state s we're going to compute π[s′ ∣ s, a]
-        next_dist_s = compute_next_pos_from_state_action(state, action)
-        for next_state in next_dist_s:
+    next_dist = PosDist(dist.state_space)
+    # NOTE: If π_init(s0) = 0 then π[sN ∣ s0, a] = 0.
+    # This is the default behavior of PosDist meaning we
+    # can focus only on non-zero states.
+    for s0 in dist.non_zero_states():
+        # Compute π[sN ∣ s0, a] for every state sN
+        next_dist_s = compute_next_pos_from_state_action(s0, action, dist.state_space)
+        # NOTE: If π[sN ∣ s0, a] = 0 then we can skip s0 for determining max_s0 min(π[sN ∣ s0, a], π_init(s0))
+        for sN in next_dist_s.non_zero_states():
             # Keep in mind the plausibility of the current
-            # state when determining the next state
-            p = min(next_dist_s[next_state], dist[state])
-            # Maximize over the state space in dist
-            next_dist[next_state] = max(next_dist[next_state], p)
+            # state when determining the next state's
+            p = min(next_dist_s[sN], dist[s0])
+            # Maximize over π[sN ∣ s0, a] for all s0s considered so far
+            next_dist[sN] = max(next_dist[sN], p)
     return next_dist

@@ -65,11 +65,15 @@ class PosDist:
         return (s for (s, p) in self.plausibilities.items() if p > 0)
 
     def __str__(self):
+        """
+        Only print the states and their plausibilities when
+        its non-zero.
+        """
         return str({kv for kv in self.plausibilities.items() if kv[1] > 0})
         # return str(self.plausibilities)
 
 @dataclass
-class PossEffect:
+class PosEffect:
     positive_discriminants: Set[Proposition]
     negative_discriminants: Set[Proposition]
     # (plausibility, add effects, delete effects)
@@ -96,7 +100,7 @@ def apply_consequent(eij: Tuple[Set[Proposition], Set[Proposition]], s: State) -
     return frozenset(eij_pos | {l for l in s if l not in eij_neg})
 
 
-def satisfies(state: State, effect: PossEffect) -> bool:
+def satisfies(state: State, effect: PosEffect) -> bool:
     """
     Returns whether a state satisfies the discriminent of a
     Possibilistic Effect e_i.
@@ -110,7 +114,7 @@ def satisfies(state: State, effect: PossEffect) -> bool:
 
 @dataclass
 class PosAction:
-    effects: List[PossEffect]
+    effects: List[PosEffect]
 
     def is_valid(self, state_space: StateSpace) -> bool:
         # Every effect must have a valid possibilistic distribution
@@ -134,7 +138,7 @@ class PosAction:
 
         return True
 
-    def find_applicable_effect(self, state: State) -> PossEffect:
+    def find_applicable_effect(self, state: State) -> PosEffect:
         """
         Returns the first PosEffect whose discriminent is
         satisfied by the state provided.
@@ -144,12 +148,13 @@ class PosAction:
                 return effect
         raise ValueError("PosAction is not valid")
 
-# Apply an action to a PosDist
-# PosDist x PosAction -> PosDist
-
-def compute_next_pos_from_state_action(s: State, action: PosAction, state_space: Set[State]) -> PosDist:
+def compute_posdist_from_state_action(s: State, action: PosAction, state_space: Set[State]) -> PosDist:
     """
-    Definition 3 from the paper describing π[s′ ∣ s, a]
+    Returns a PosDist representing a vector where each element is
+    π[s′ ∣ s, a] for each s′ in the state space.
+
+    Derived from definition 3 from the paper describing
+    π[s′ ∣ s, a].
     """
     next_dist = PosDist(state_space)
     # Enforces that s ∈ S(t_i)
@@ -162,18 +167,22 @@ def compute_next_pos_from_state_action(s: State, action: PosAction, state_space:
 
     return next_dist
 
-def compute_next_pos_from_pos_action(dist: PosDist, action: PosAction) -> PosDist:
+def compute_posdist_from_curpos_action(dist: PosDist, action: PosAction) -> PosDist:
     """
-    Second equation from definition 3 describing π[sN ∣ π_init, a]
+    Returns a PosDist representing a vector where each element is
+    π[sN ∣ π_last, a] for each sN in the state space.
+
+    Derived from the second equation from definition 3
+    describing π[Goals ∣ π_init, <a_i>].
     """
     next_dist = PosDist(dist.state_space)
-    # NOTE: If π_init(s0) = 0 then π[sN ∣ s0, a] = 0.
+    # NOTE: If π_last(s0) = 0 then π[sN ∣ s0, a] = 0.
     # This is the default behavior of PosDist meaning we
     # can focus only on non-zero states.
     for s0 in dist.non_zero_states():
         # Compute π[sN ∣ s0, a] for every state sN
-        next_dist_s = compute_next_pos_from_state_action(s0, action, dist.state_space)
-        # NOTE: If π[sN ∣ s0, a] = 0 then we can skip s0 for determining max_s0 min(π[sN ∣ s0, a], π_init(s0))
+        next_dist_s = compute_posdist_from_state_action(s0, action, dist.state_space)
+        # NOTE: If π[sN ∣ s0, a] = 0 then we can skip s0 for determining max_s0 min(π[sN ∣ s0, a], π_last(s0))
         for sN in next_dist_s.non_zero_states():
             # Keep in mind the plausibility of the current
             # state when determining the next state's
@@ -182,26 +191,73 @@ def compute_next_pos_from_pos_action(dist: PosDist, action: PosAction) -> PosDis
             next_dist[sN] = max(next_dist[sN], p)
     return next_dist
 
-def compute_next_nec_from_pos_action(dist: PosDist, action: PosAction) -> PosDist:
+def compute_necdist_from_pos_action(dist: PosDist, action: PosAction) -> PosDist:
     """
-    Third equation from definition 3 describing N[sN ∣ π_init, a]
+    Returns a PosDist representing a vector where each element is
+    N[sN ∣ π_last, a] for each sN in the state space.
+
+    Derived from the third equation from definition 3
+    describing N[Goals ∣ π_init, <a_i>].
     """
     state_space = dist.state_space
     next_dist = PosDist(state_space)
-    
+
     # First assign everything with a necessity of 1
     # and the algorithm will iteratively take the min
     # of this and π[s ∣ s0, a] for every s0
     for s in state_space:
         next_dist[s] = 1
-    
+
     for s0 in state_space:
         # Compute π[sNC ∣ s0, a] for every state sNC
-        next_dist_s = compute_next_pos_from_state_action(s0, action, state_space)
+        next_dist_s = compute_posdist_from_state_action(s0, action, state_space)
         for sN, sNC in product(state_space, state_space):
             # Only look at the compliment of sN
             if sN != sNC:
                 p = max(1 - dist[s0], 1 - next_dist_s[sNC])
-                next_dist[sN] = min(next_dist[sN], p)    
+                next_dist[sN] = min(next_dist[sN], p)
 
     return next_dist
+
+def compute_nec_from_pos_action(states: List[State], dist: PosDist, action: PosAction) -> Plausibility:
+    """
+    Returns the value of N[states ∣ π_last, a] as a necessity value.
+
+    Derived from the third equation from definition 3
+    describing N[Goals ∣ π_init, <a_i>].
+    """
+    state_space = dist.state_space
+    nvalue = 1
+
+    for s0 in state_space:
+        # Compute π[sNC ∣ s0, a] for every state sNC
+        next_dist_s = compute_posdist_from_state_action(s0, action, state_space)
+        for sNC in state_space:
+            # Only consider the compliment of states
+            if sNC not in states:
+                p = max(1 - dist[s0], 1 - next_dist_s[sNC])
+                nvalue = min(nvalue, p)
+
+    return nvalue
+
+class PosPlanningProblem:
+    def __init__(self, initial_distribution: PosDist, actions: List[PosAction], goal: Set[Proposition]):
+        self.initial_distribution = initial_distribution
+        self.actions  = actions
+        self.goal = goal
+
+    def is_valid(self) -> bool:
+        state_space = self.initial_distribution.state_space
+        if not self.initial_distribution.is_valid():
+            print("Not valid initial distributoin")
+            return False
+
+        for action in self.actions:
+            if not action.is_valid(state_space):
+                print("Invalid action found")
+                return False
+
+        for s in state_space:
+            if self.goal < s:
+                return True
+        return False
